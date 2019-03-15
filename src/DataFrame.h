@@ -20,7 +20,7 @@ extern std::vector<std::string> SplitString( std::string inString,
 extern bool OnlyDigits( std::string str );
 
 // Type definition for CSV NamedData to pair column names/column data
-typedef std::vector<std::pair<std::string, std::vector<double> > > NamedData;
+typedef std::vector<std::pair<std::string, std::vector<double>>> NamedData;
 
 //----------------------------------------------------------------
 // DataFrame class
