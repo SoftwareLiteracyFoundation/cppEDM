@@ -1,5 +1,6 @@
 
 #include "AuxFunc.h"
+#include "DateTime.h"
 
 //---------------------------------------------------------------
 // Common code for Simplex and Smap that embeds, extracts
@@ -119,7 +120,7 @@ DataEmbedNN EmbedNN( DataFrame<double>  dataIn,
 
             // erase elements of row indices that were deleted
             for ( auto element =  deleted_elements.begin();
-                       element != deleted_elements.end(); element++ ) {
+                  element != deleted_elements.end(); element++ ) {
 
                 std::vector< size_t >::iterator it;
                 it = std::find( param.library.begin(),
@@ -141,11 +142,11 @@ DataEmbedNN EmbedNN( DataFrame<double>  dataIn,
             // in library and prediction refer to the same data rows
             // before the deletion/shift.
             for ( auto li =  param.library.begin();
-                       li != param.library.end(); li++ ) {
+                  li != param.library.end(); li++ ) {
                 *li = *li - shift;
             }
             for ( auto pi =  param.prediction.begin();
-                       pi != param.prediction.end(); pi++ ) {
+                  pi != param.prediction.end(); pi++ ) {
                 *pi = *pi - shift;
             }
         } // if ( shift > 0 )
@@ -299,6 +300,9 @@ void FillTimes( Parameters                param,
         }
     }
     else {
+        // Keep track of whether warning of time format already printed
+        bool time_format_warning_printed = false;
+        
         // Tp introduces time values beyond the range of time
         for ( auto i = N_row; i < N_row + param.Tp; i++ ) {
             std::stringstream tss;
@@ -308,9 +312,30 @@ void FillTimes( Parameters                param,
                 tss << std::stod( time[ max_pred_i ] ) + i - N_row + 1;
             }
             else {
-                // JP: Use chrono to get new time value
-                // This " + Ti" is bogus...
-                tss << time[ max_pred_i ] << " +" << i - N_row + 1;
+                int time_delta = i - N_row + 1;
+                //get last two datetimes to compute time diff to add time delta 
+                std::string time_new( time[ max_pred_i     ] );
+                std::string time_old( time[ max_pred_i - 1 ] );
+                std::string new_time = increment_datetime_str( time_old, 
+                                                               time_new,
+                                                               time_delta );
+                
+                if ( new_time.size() ) {
+                    tss << new_time;
+                }
+                else {
+                    // Add " +ti" if not a recognized format
+                    // increment_datetime_str() returns ""
+                    tss << time[ max_pred_i ] << " +" << i - N_row + 1;
+                    if ( not time_format_warning_printed ) {
+                        std::stringstream errMsg;
+                        errMsg << "FillTimes(): Input time column format "
+                               << "not recognized.  Appending '+ tp' to last "
+                               << " available time." << std::endl;
+                        std::cout << errMsg.str();
+                        time_format_warning_printed = true;
+                    }
+                }
             }
             
             timeOut[ i ] = tss.str();

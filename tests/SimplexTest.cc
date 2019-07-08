@@ -60,7 +60,6 @@ int main () {
 
     std::cout << cppOutput; // ISO datetime in Time column
     
-    // Comparison
     MakeTest ( "S12CD-S333 ISO datetime", pyOutput, cppOutput );
 
 }
