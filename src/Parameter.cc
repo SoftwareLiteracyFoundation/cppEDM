@@ -84,7 +84,7 @@ Parameters::Parameters(
 
     // Set validated flag and instantiate Version
     validated        ( false ),
-    version          ( 1, 2, 0, "2020-01-21" )
+    version          ( 1, 2, 1, "2020-02-05" )
 {
     // Constructor code
     if ( method != Method::None ) {
@@ -497,15 +497,7 @@ void Parameters::DeleteLibPred( size_t shift ) {
             *pi = *pi - shift;
         }
     }
-    // tau > 0  : Forward shifting  no adjustment needed from origin
-    // else {
-    //     for ( auto li = library.begin(); li != library.end(); li++ ) {
-    //         *li = *li + shift;
-    //     }
-    //     for ( auto pi = prediction.begin(); pi != prediction.end(); pi++ ) {
-    //         *pi = *pi + shift;
-    //     }
-    // }
+    // tau > 0  : Forward shifting: no adjustment needed from origin
 }
 
 //------------------------------------------------------------------
