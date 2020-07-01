@@ -3,6 +3,34 @@
 #include "DateTime.h"
 
 //----------------------------------------------------------
+// Clip data & target rows to match the embedding
+//----------------------------------------------------------
+void EDM::RemovePartialData()
+{
+    // NOTE : Not thread safe : Call needs mutex wrap
+
+    if ( data.PartialDataRowsDeleted() ) {
+        std::cout << "RemovePartialData(): Partial data rows have "
+            "already been deleted." << std::endl;
+        return;
+    }
+
+    data.PartialDataRowsDeleted() = true;
+
+    int shift = abs( parameters.tau ) * ( parameters.E - 1 );
+    
+    // Delete data rows corresponding to embedding partial data rows
+    data.DeletePartialDataRows( shift, parameters.tau );
+
+    GetTarget();
+    
+    // Adjust parameters.library and parameters.prediction vectors of indices
+    if ( shift > 0 ) {
+        parameters.DeleteLibPred();
+    }
+}
+
+//----------------------------------------------------------
 // Validate dataFrameIn rows against lib and pred indices
 //----------------------------------------------------------
 void EDM::CheckDataRows( std::string call )
@@ -40,6 +68,9 @@ void EDM::CheckDataRows( std::string call )
         throw std::runtime_error( errMsg.str() );
     }
 
+    // Tweak for CCM that sets lib = pred = [1, NRow]
+    if ( parameters.method == Method::CCM ) { shift = 0; }
+    
     if ( data.NRows() <= library_max_i + shift ) {
         std::stringstream errMsg;
         errMsg << "CheckDataRows(): " << call

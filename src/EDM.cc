@@ -13,13 +13,25 @@ EDM::EDM ( DataFrame< double > & data,
     data( data ), anyTies( false ), parameters( parameters ) {}
 
 //----------------------------------------------------------------
-// FindNeighbors : See EDM_Neighbors.cc
-//----------------------------------------------------------------
-
-//----------------------------------------------------------------
 // Project : Implemented in sub-class
 //----------------------------------------------------------------
 void EDM::Project () {}
+
+//----------------------------------------------------------------
+// Set target (library) vector
+//----------------------------------------------------------------
+void EDM::GetTarget() {
+    if ( parameters.targetIndex ) {
+        target = data.Column( parameters.targetIndex );
+    }
+    else if ( parameters.targetName.size() ) {
+        target = data.VectorColumnName( parameters.targetName );
+    }
+    else {
+        // Default to first column
+        target = data.Column( 0 );
+    }
+}
 
 //----------------------------------------------------------------
 // Implemented as a wrapper for API MakeBlock()

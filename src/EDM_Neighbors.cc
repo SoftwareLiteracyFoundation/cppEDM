@@ -10,7 +10,7 @@ namespace EDM_Neighbors_Lock {
 //   0) CheckDataRows()
 //   1) Extract or Embed() data into embedding
 //   2) Get target (library) vector
-//   3) DeletePartialDataRows()
+//   3) RemovePartialData()
 //   4) Adjust parameters.library and parameters.prediction indices
 //
 // NOTE: time column is not returned in the embedding dataBlock.
@@ -51,67 +51,26 @@ void EDM::PrepareEmbedding( bool checkDataRows ) {
         EmbedData();
     }
 
-    // Get target (library) vector
-    if ( parameters.targetIndex ) {
-        target = data.Column( parameters.targetIndex );
-    }
-    else if ( parameters.targetName.size() ) {
-        target = data.VectorColumnName( parameters.targetName );
-    }
-    else {
-        // Default to first column
-        target = data.Column( 0 );
-    }
+    GetTarget();
 
     //------------------------------------------------------------
     // embedded = false: Embed() was called on data
-    // Remove target, data rows as needed
+    // Remove data & target rows as needed to match embedding
     // Adjust parameters.library and parameters.prediction indices
     //------------------------------------------------------------
     if ( not parameters.embedded ) {
 
         if ( parameters.E < 1 ) {
             std::stringstream errMsg;
-            errMsg << "PreparEmbedding(): E = " << parameters.E
-                   << " is invalid.\n" ;
+            errMsg << "PrepareEmbedding(): E = " << parameters.E
+                   << " is invalid with embedded = true.\n" ;
             throw std::runtime_error( errMsg.str() );
         }
 
-        size_t shift = abs( parameters.tau ) * ( parameters.E - 1 );
-
-        // Copy targetIn excluding partial data into targetEmbed
-        std::valarray< double > targetEmbed( data.NRows() - shift );
-
-        // Bogus cast to ( std::valarray<double> ) for MSVC
-        // as it doesn't export its own slice_array applied to []
-        if ( parameters.tau < 0 ) {
-            targetEmbed = ( std::valarray< double > )
-                target[ std::slice( shift, target.size() - shift, 1 ) ];
-        }
-        else {
-            targetEmbed = ( std::valarray< double > )
-                target[ std::slice( 0, target.size() - shift, 1 ) ];
-        }
-
-        // Resize target to ignore partial data rows
-        target.resize( targetEmbed.size() );
-
-        // Copy target without partial data into resized targetIn
-        std::slice targetEmbed_i  = std::slice( 0, targetEmbed.size(), 1 );
-        target[ targetEmbed_i ] = ( std::valarray< double > )
-            targetEmbed[ targetEmbed_i ];
-
-        // Delete dataIn top or bottom rows of partial data
+        // Delete data & target top or bottom rows of partial embedding data
         if ( not data.PartialDataRowsDeleted() ) {
-            // Not thread safe
             std::lock_guard<std::mutex> lck( EDM_Neighbors_Lock::mtx );
-            
-            data.DeletePartialDataRows( shift, parameters.tau );
-        }
-
-        // Adjust parameters.library and parameters.prediction vectors of indices
-        if ( shift > 0 ) {
-            parameters.DeleteLibPred();
+            RemovePartialData();
         }
 
         // Check boundaries again since rows were removed
@@ -189,6 +148,7 @@ void EDM::FindNeighbors() {
         predPairs( N_prediction_rows );
 
     for ( size_t pred_row = 0; pred_row < N_prediction_rows; pred_row++ ) {
+
         std::valarray< double > rowDist = allDistances.Row( pred_row );
 
         std::vector< std::pair< double, size_t > > rowPairs( rowDist.size() );
@@ -240,25 +200,35 @@ void EDM::FindNeighbors() {
         // distance must be .first
         std::sort( rowPair.begin(), rowPair.end(), DistanceCompare );
 
+        //----------------------------------------------------------------
         // Insert knn distance / library row index into knn vectors
-        std::valarray< double > knnDistances( parameters.knn );
-        std::valarray< size_t > knnLibRows  ( parameters.knn );
+        //----------------------------------------------------------------
+        // JP: This is sneaky: knnDistances & knnLibRows are initialised
+        //     to nan, which translate to "quiet nan".  Following PEP 20,
+        //     generate WARNING if parameters.knn neighbors are not found.
+        std::valarray< double > knnDistances( nanf("knn"), parameters.knn );
+        std::valarray< size_t > knnLibRows  ( nanl("knn"), parameters.knn );
 
         int lib_row_i = 0;
         int k         = 0;
         while ( k < parameters.knn ) {
             if ( lib_row_i >= rowPairSize ) {
                 std::stringstream errMsg;
-                errMsg << "FindNeighbors(): knn search failed. "
+                errMsg << "WARNING: FindNeighbors(): knn search failed "
+                       << "at prediction row " << predictionRow << ". "
                        << k << " out of " << parameters.knn
-                       << " neighbors were found in the library.\n" ;
-                throw std::runtime_error( errMsg.str() );
+                       << " neighbors were found in the library.\n";
+                std::cout << errMsg.str();
+
+                k = (int) rowPair.size(); // Avoid tie check below
+                break;                    // Continue to next row
             }
 
             double distance = rowPair[ lib_row_i ].first;
             size_t lib_row  = rowPair[ lib_row_i ].second;
 
             if ( lib_row == predictionRow ) {
+                lib_row_i++;
                 continue; // degenerate pred : lib, ignore
             }
 
@@ -429,7 +399,7 @@ double Distance( const std::valarray< double > & v1,
     else if ( metric == DistanceMetric::Manhattan ) {
         double sum = 0;
         for ( size_t i = 0; i < v1.size(); i++ ) {
-            sum += abs( v2[i] - v1[i] );
+            sum += fabs( v2[i] - v1[i] );
         }
         distance = sum;
     }

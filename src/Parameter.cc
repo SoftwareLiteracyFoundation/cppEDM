@@ -42,7 +42,6 @@ Parameters::Parameters(
     bool        replacement,
     unsigned    seed,
     bool        includeData,
-    bool        colToTargetFlag,
     bool        noNeighborLimit
     ) :
     // Variable initialization from Parameters arguments
@@ -83,12 +82,11 @@ Parameters::Parameters(
     replacement      ( replacement ),
     seed             ( seed ),
     includeData      ( includeData ),
-    colToTargetFlag  ( colToTargetFlag ),
     noNeighborLimit  ( noNeighborLimit ),
 
     // Set validated flag and instantiate Version
     validated        ( false ),
-    version          ( 1, 5, 0, "2020-06-19" )
+    version          ( 1, 5, 0, "2020-07-01" )
 {
     // Constructor code
     if ( method != Method::None ) {

@@ -10,20 +10,23 @@ namespace EDM_CCM_Lock {
 //----------------------------------------------------------------
 // forward declaration
 //----------------------------------------------------------------
-void CrossMap( SimplexClass & S );
+void CrossMap( SimplexClass   & S,         // input
+               CrossMapValues & values );  // output
 
 //----------------------------------------------------------------
 // Constructor
-// data & parameters initialise EDM::SimplexClass parent, and, 
-// both mapping objects to the same initial parameters.
+// Initialise EDM::SimplexClass parent, and, 
+// both mapping objects to the same initial data & parameters.
 //----------------------------------------------------------------
 CCMClass::CCMClass (
     DataFrame< double > & data, 
     Parameters          & parameters ) :
-    SimplexClass  ( data, parameters ),  // base class initialise
-    colToTargetCCM( data, parameters ),  // forward mapping object
-    targetToColCCM( data, parameters )   // reverse mapping object
-{}
+    SimplexClass( data, parameters ), // base class initialise
+    colToTarget ( data, parameters ),
+    targetToCol ( data, parameters )
+{
+    // Set targetToCol reverse mapping in SetupParameters()
+}
 
 //----------------------------------------------------------------
 // Project : Polymorphic implementation
@@ -32,33 +35,45 @@ void CCMClass::Project () {
 
     SetupParameters(); // Forward and reverse mapping objects
 
-    CCM(); // PrepareEmbedding, Distances, FindNeighbors, Simplex
+    // Compute all distances in SimplexClass objects
+    // CrossMap() will take subsets of these for each library size
+    // with calls to FindNeighbors(), Simplex() in CrossMap()
+    colToTarget.PrepareEmbedding(); // embedding, target, RemovePartialData()
+    targetToCol.PrepareEmbedding(); // embedding, target, RemovePartialData()
+
+    colToTarget.Distances();        // allDistances, allLibRows
+    targetToCol.Distances();        // allDistances, allLibRows
+
+    CCM();                          // FindNeighbors(), Simplex()
 
     FormatOutput();
-
     WriteOutput();
 }
 
 //----------------------------------------------------------------
 // CCM 
 // To accomodate two threads running forward & inverse mapping
-// CrossMap() is called with separate EDM::Simplex objects:
-//     SimplexClass colToTargetCCM;  column to target mapping
-//     SimplexClass targetToColCCM;  target to column mapping
+// CrossMap() is called with separate Simplex and CrossMapValues:
+//     SimpexClass colToTarget;  column to target mapping
+//     SimpexClass targetToCol;  target to column mapping
 // These fill the respective EDM object CrossMapValues structs:
-//     CrossMapValues  colToTarget; 
-//     CrossMapValues  targetToCol;
+//     CrossMapValues colToTargetValues; 
+//     CrossMapValues targetToColValues;
 //----------------------------------------------------------------
 void CCMClass::CCM () {
-    
+
     if ( parameters.columnNames.size() > 1 ) {
         std::cout << "WARNING: CCM() Only the first column will be mapped.\n";
     }
-    
+
 #ifdef CCM_THREADED
-    std::thread CrossMapColTarget( CrossMap, std::ref( colToTargetCCM ) );
-    std::thread CrossMapTargetCol( CrossMap, std::ref( targetToColCCM ) );
-    
+    std::thread CrossMapColTarget( CrossMap,
+                                   std::ref( colToTarget ),
+                                   std::ref( colToTargetValues ) );
+
+    std::thread CrossMapTargetCol( CrossMap,
+                                   std::ref( targetToCol ),
+                                   std::ref( targetToColValues ) );
     CrossMapColTarget.join();
     CrossMapTargetCol.join();
 
@@ -76,8 +91,8 @@ void CCMClass::CCM () {
         std::rethrow_exception( exceptionPtr );
     }
 #else
-    CrossMap( std::ref( colToTargetCCM ) );
-    CrossMap( std::ref( targetToColCCM ) );
+    CrossMap( std::ref( colToTarget ), std::ref( colToTargetValues ) );
+    CrossMap( std::ref( targetToCol ), std::ref( targetToColValues ) );
 #endif
 }
 
@@ -85,8 +100,9 @@ void CCMClass::CCM () {
 // CrossMap()
 // Thread worker function for CCM.
 //----------------------------------------------------------------
-void CrossMap( SimplexClass & S ) {
-
+void CrossMap( SimplexClass   & S,
+               CrossMapValues & values )
+{
     if ( S.parameters.verbose ) {
         std::lock_guard<std::mutex> lck( EDM_CCM_Lock::mtx );
         std::stringstream msg;
@@ -105,10 +121,22 @@ void CrossMap( SimplexClass & S ) {
     if ( S.parameters.E < 1 ) {
         std::lock_guard<std::mutex> lck( EDM_CCM_Lock::mtx );
         std::stringstream errMsg;
-        errMsg << "CrossMap(): E = " << S.parameters.E << " is invalid.\n" ;
+        errMsg << "CrossMap(): E = " << S.parameters.E << " is invalid.\n";
         throw std::runtime_error( errMsg.str() );
     }
-    
+
+    int shift = abs( S.parameters.tau ) * ( S.parameters.E - 1 );
+
+    if ( shift >= (int) S.data.NRows() ) {
+        std::lock_guard<std::mutex> lck( EDM_CCM_Lock::mtx );
+        std::stringstream errMsg;
+        errMsg << "CrossMap(): Number of data rows " << S.data.NRows()
+               << " is not sufficient for tau*(E-1) = " << shift << ".\n";
+        throw std::runtime_error( errMsg.str() );
+    }
+
+    size_t N_row = S.embedding.NRows();
+
     //-----------------------------------------------------------------
     // Set number of samples
     //-----------------------------------------------------------------
@@ -135,12 +163,11 @@ void CrossMap( SimplexClass & S ) {
         }
     }
     std::default_random_engine DefaultRandomEngine( S.parameters.seed );
-    
+
     //----------------------------------------------------------
     // Predictions
     //----------------------------------------------------------
     size_t predictionCount = 0;
-    size_t N_row           = S.embedding.NRows();
 
     //----------------------------------------------------------
     // Loop for library sizes
@@ -156,8 +183,9 @@ void CrossMap( SimplexClass & S ) {
 #ifdef DEBUG_ALL
         {
         std::lock_guard<std::mutex> lck( EDM_CCM_Lock::mtx );
-            std::cout << "libSize: " << libSize
-                      << " ------------------------------------------\n";
+        std::cout << "N_row: " << N_row << " maxSamples: " << maxSamples
+                  << " libSize: " << libSize
+                  << " ------------------------------------------\n";
         }
 #endif
         // Output statistics vectors
@@ -177,7 +205,6 @@ void CrossMap( SimplexClass & S ) {
 
             if ( S.parameters.randomLib ) {
                 // Uniform random sample of rows
-                
                 if ( S.parameters.replacement ) {
                     // With replacement
                     for ( size_t i = 0; i < libSize; i++ ) {
@@ -206,9 +233,10 @@ void CrossMap( SimplexClass & S ) {
 
                     // Copy samples into result
                     std::vector<size_t> result( samples.begin(), samples.end() );
-                    
+
                     lib_i = result; // Copy result to lib_i
                 }
+                // std::sort( lib_i.begin(), lib_i.end() ); // JP Why?
             }
             else {
                 // Not random samples, contiguous samples increasing size
@@ -217,7 +245,7 @@ void CrossMap( SimplexClass & S ) {
                     lib_i.resize( N_row );
                     std::iota( lib_i.begin(), lib_i.end(), 0 );
                     libSize = N_row;
-                    
+
                     if ( S.parameters.verbose ) {
                         std::stringstream msg;
                         msg << "CCM(): Sequential library samples,"
@@ -235,7 +263,7 @@ void CrossMap( SimplexClass & S ) {
                         // n + libSize > N_row, wrap around to data origin
                         std::vector< size_t > lib_start( N_row - n );
                         std::iota( lib_start.begin(), lib_start.end(), n );
-                        
+
                         size_t max_i = std::min( libSize-(N_row - n), N_row );
                         std::vector< size_t > lib_wrap( max_i );
                         std::iota( lib_wrap.begin(), lib_wrap.end(), 0 );
@@ -259,43 +287,42 @@ void CrossMap( SimplexClass & S ) {
             } std::cout << std::endl;
             }
 #endif
+            //----------------------------------------------------------
+            // Local SimplexClass object for mapping
+            //    Uses subset of CCMClass SimplexClass object
+            //----------------------------------------------------------
+            SimplexClass Simplex_( S.data, S.parameters );
 
             //----------------------------------------------------------
-            // Set library and predict indices to lib_i
+            // Subset Distances and lib row indices to lib_i
             //----------------------------------------------------------
-            S.parameters.library.resize( lib_i.size() );
-            std::iota( S.parameters.library.begin(),
-                       S.parameters.library.end(), 0 );
-            S.parameters.prediction.resize( lib_i.size() );
-            std::iota( S.parameters.prediction.begin(),
-                       S.parameters.prediction.end(), 0 );
-
-            S.CopyData(); // Reset to input data for subsetting
-
-            // Subset data to lib_i rows
-            S.data = S.dataCCM.DataFrameFromRowIndex( lib_i );
-
-            S.PrepareEmbedding( false ); // checkDataRows = false
-
-            S.Distances();     // Write EDM: allDistances, allLibRows
-
-            S.FindNeighbors(); // On allDistances allLibRows
-
-            S.Simplex();
+            Simplex_.allLibRows = 
+                S.allLibRows.DataFrameFromColumnIndex( lib_i );
             
-            S.FormatOutput();
+            Simplex_.allDistances =
+                S.allDistances.DataFrameFromColumnIndex( lib_i );            
+
+            //----------------------------------------------------------
+            // Cross mapping
+            //----------------------------------------------------------
+            Simplex_.GetTarget();
+            Simplex_.FindNeighbors();
+            Simplex_.Simplex();
+            Simplex_.FormatOutput();
 
             VectorError ve = ComputeError(
-                S.projection.VectorColumnName( "Observations" ),
-                S.projection.VectorColumnName( "Predictions"  ) );
+                Simplex_.projection.VectorColumnName( "Observations" ),
+                Simplex_.projection.VectorColumnName( "Predictions"  ) );
 
 #ifdef DEBUG_ALL
             {
             std::lock_guard<std::mutex> lck( EDM_CCM_Lock::mtx );
-            std::cout << "CCM Simplex ---------------------------------\n";
-            S.projection.MaxRowPrint() = S.projection.NRows();
-            std::cout << S.projection;
-            std::cout << "rho " << ve.rho << "  RMSE " << ve.RMSE
+            std::cout << "CCM Simplex -------- Column: ";
+            std::cout << Simplex_.parameters.columnNames[0] << "  :  Target: "
+                      << Simplex_.parameters.targetName << " --------\n";
+            // Simplex_.projection.MaxRowPrint() = Simplex_.projection.NRows();
+            // std::cout << Simplex_.projection;
+            std::cout << "    rho " << ve.rho << "  RMSE " << ve.RMSE
                       << "  MAE " << ve.MAE << std::endl;
             }
 #endif
@@ -316,23 +343,13 @@ void CrossMap( SimplexClass & S ) {
                 predOutVec[ 6 ] = ve.RMSE;             // RMSE
                 predOutVec[ 7 ] = ve.MAE;              // MAE
 
-                if ( S.parameters.colToTargetFlag ) {
-                    // S object is SimplexClass colToTargetCCM
-                    // Write to EDM object CrossMapValues colToTarget
-                    S.colToTarget.PredictStats.WriteRow( predictionCount,
-                                                         predOutVec );
-                    // Save predictions
-                    S.colToTarget.Predictions.push_front( S.projection );
-                }
-                else {
-                    // S object is SimplexClass targetToColCCM
-                    // Write to EDM object CrossMapValues targetToCol
-                    S.targetToCol.PredictStats.WriteRow( predictionCount,
-                                                         predOutVec );
-                    S.targetToCol.Predictions.push_front( S.projection );
-                }
+                values.PredictStats.WriteRow( predictionCount,
+                                              predOutVec );
+                // Save predictions
+                values.Predictions.push_front( S.projection );
             }
-            predictionCount++; 
+
+            predictionCount++;
         } // for ( n = 0; n < maxSamples; n++ )
 
         std::valarray< double > statVec( 4 );
@@ -341,18 +358,17 @@ void CrossMap( SimplexClass & S ) {
         statVec[ 2 ] = RMSE.sum() / maxSamples;
         statVec[ 3 ] = MAE.sum()  / maxSamples;
 
-        if ( S.parameters.colToTargetFlag ) {
-            S.colToTarget.LibStats.WriteRow( libSize_i, statVec );
-        }
-        else {
-            S.targetToCol.LibStats.WriteRow( libSize_i, statVec );
-        }
+        values.LibStats.WriteRow( libSize_i, statVec );
     } // for ( libSize_i < parameters.librarySizes )
     } // try 
     catch(...) {
+#ifdef CCM_THREADED
         // push exception pointer onto queue for main thread to catch
         std::lock_guard<std::mutex> lck( EDM_CCM_Lock::q_mtx );
         EDM_CCM_Lock::exceptionQ.push( std::current_exception() );
+#else
+        throw std::rethrow_exception( std::current_exception() );
+#endif
     }
 }
 
@@ -361,29 +377,10 @@ void CrossMap( SimplexClass & S ) {
 //-----------------------------------------------------------------
 void CCMClass::SetupParameters() {
 
-    // Each thread has it's own copy of input data & parameters
-    colToTargetCCM.dataCCM = data; // Copy
-    targetToColCCM.dataCCM = data; // Copy
-
-    colToTargetCCM.parameters = parameters; // Copy
-    targetToColCCM.parameters = parameters; // Copy
-
-    // Swap column : target in targetToColCCM
-    targetToColCCM.parameters.columnNames =
-        std::vector< std::string >( 1, parameters.targetName );
-    targetToColCCM.parameters.targetName = parameters.columnNames[0];
-
-    // Set flags to track direction of mapping for output data routing
-    colToTargetCCM.parameters.colToTargetFlag = true;
-    targetToColCCM.parameters.colToTargetFlag = false;
-
-    // JP: No need for embedding, lib/pred adjust. Just to get target.
-    colToTargetCCM.PrepareEmbedding( false ); // embedding, target, lib, pred
-    targetToColCCM.PrepareEmbedding( false ); // embedding, target, lib, pred
-
-    // Each thread has it's own copy of input target
-    colToTargetCCM.targetCCM = colToTargetCCM.target; // Copy
-    targetToColCCM.targetCCM = targetToColCCM.target; // Copy
+    // Swap column : target in targetToCol.parameters
+    targetToCol.parameters.columns_str = parameters.targetName;
+    targetToCol.parameters.target_str  = parameters.columnNames[0];
+    targetToCol.parameters.Validate();
 
     //------------------------------------------------------------------
     // DataFrames for output CrossMapValues structs in EDM object
@@ -408,29 +405,17 @@ void CCMClass::SetupParameters() {
     DataFrame< double > LibStats2( parameters.librarySizes.size(), 4,
                                    "LibSize rho RMSE MAE" );
 
-    // Instantiate EDM CrossMapValues output structs and insert DataFrames
-    colToTargetCCM.colToTarget = CrossMapValues();
-    targetToColCCM.targetToCol = CrossMapValues();
+    // Instantiate Simplex CrossMapValues output structs and insert DataFrames
+    colToTargetValues = CrossMapValues();
+    targetToColValues = CrossMapValues();
 
-    colToTargetCCM.colToTarget.LibStats = LibStats1;
-    targetToColCCM.targetToCol.LibStats = LibStats2;
+    colToTargetValues.LibStats = LibStats1;
+    targetToColValues.LibStats = LibStats2;
 
     if ( parameters.includeData ) {
-        colToTargetCCM.colToTarget.PredictStats = PredictionStats1;
-        targetToColCCM.targetToCol.PredictStats = PredictionStats2;
+        colToTargetValues.PredictStats = PredictionStats1;
+        targetToColValues.PredictStats = PredictionStats2;
     }
-}
-
-//----------------------------------------------------------------
-// Copy full library input data to EDM::Simplex objects for threads
-//----------------------------------------------------------------
-void CCMClass::CopyData () {
-    
-    colToTargetCCM.data = colToTargetCCM.dataCCM;
-    targetToColCCM.data = targetToColCCM.dataCCM;
-    
-    colToTargetCCM.target = colToTargetCCM.targetCCM;
-    targetToColCCM.target = targetToColCCM.targetCCM;
 }
 
 //----------------------------------------------------------------
@@ -442,14 +427,14 @@ void CCMClass::FormatOutput () {
     libRhoNames << "LibSize "
                 << parameters.columnNames[0] <<":"<< parameters.targetName << " "
                 << parameters.targetName     <<":"<< parameters.columnNames[0];
-    
+
     // Allocate unified LibStats output DataFrame in EDM object
     allLibStats = DataFrame< double >( parameters.librarySizes.size(), 3,
                                        libRhoNames.str() );
 
-    allLibStats.WriteColumn(0, colToTargetCCM.colToTarget.LibStats.Column( 0 ));
-    allLibStats.WriteColumn(1, colToTargetCCM.colToTarget.LibStats.Column( 1 ));
-    allLibStats.WriteColumn(2, targetToColCCM.targetToCol.LibStats.Column( 1 ));
+    allLibStats.WriteColumn( 0, colToTargetValues.LibStats.Column( 0 ) );
+    allLibStats.WriteColumn( 1, colToTargetValues.LibStats.Column( 1 ) );
+    allLibStats.WriteColumn( 2, targetToColValues.LibStats.Column( 1 ) );
 }
 
 //----------------------------------------------------------------
